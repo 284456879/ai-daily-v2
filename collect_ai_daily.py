@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 import pytz
 import os
+from deep_translator import GoogleTranslator
 
 # Notion API 配置
 NOTION_KEY = os.environ.get("NOTION_KEY")
@@ -17,7 +18,10 @@ NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 # 时区配置
 HONGKONG_TZ = pytz.timezone('Asia/Hong_Kong')
 
-def create_notion_page(title, content_blocks):
+# 初始化翻译器
+translator = GoogleTranslator(source='en', target='zh-CN')
+
+def create_notion_page(title, content_blocks, ai_hotspots_text, github_projects_text):
     """在 Notion 中创建页面"""
     url = "https://api.notion.com/v1/pages"
 
@@ -27,6 +31,10 @@ def create_notion_page(title, content_blocks):
         "Content-Type": "application/json"
     }
 
+    # 当天的日期
+    today = datetime.now(HONGKONG_TZ).strftime("%Y-%m-%d")
+
+    # 简化的属性（仅包含 Name）
     data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
@@ -62,8 +70,16 @@ def collect_ai_hotspots():
                          'neural', 'LLM', 'GPT', 'Claude', 'openai', 'chatgpt']
 
             if any(keyword.lower() in title.lower() for keyword in ai_keywords):
+                # 翻译标题为中文
+                try:
+                    title_zh = translator.translate(title)
+                except Exception as e:
+                    print(f"Translation error for AI hotspot: {e}")
+                    title_zh = title
+                
                 hotspots.append({
-                    "title": title,
+                    "title": title_zh,
+                    "title_en": title,  # 保存英文原文
                     "description": f"Hacker News - {story.get('score', 0)} points",
                     "source": "Hacker News",
                     "url": story.get('url', f"https://news.ycombinator.com/item?id={story_id}")
@@ -118,9 +134,23 @@ def collect_github_trending():
                 data = response.json()
 
                 for item in data.get('items', [])[:3]:  # 每个查询取前3个
+                    # 翻译名称和描述
+                    name_en = item['name']
+                    desc_en = item['description'] or "No description"
+                    
+                    try:
+                        name_zh = translator.translate(name_en)
+                        desc_zh = translator.translate(desc_en)
+                    except Exception as e:
+                        print(f"Translation error for GitHub project: {e}")
+                        name_zh = name_en
+                        desc_zh = desc_en
+                    
                     projects.append({
-                        "name": item['name'],
-                        "description": item['description'] or "No description",
+                        "name": name_zh,
+                        "name_en": name_en,  # 保存英文原文
+                        "description": desc_zh,
+                        "description_en": desc_en,
                         "stars": item['stargazers_count'],
                         "language": item['language'] or "Unknown",
                         "url": item['html_url'],
@@ -167,70 +197,81 @@ def main():
     for project in github_projects:
         github_projects_text += f"{project['name']} ({project['language']}) - {project['stars']} stars\n{project['description']}\nLink: {project['url']}\n\n"
 
-    # 创建 Notion 内容块
+    # 创建 Notion 内容块（双语版本）
     content_blocks = []
 
-    # AI 热点部分
+    # AI 热点部分 - 双语显示
     content_blocks.append({
         "object": "block",
         "type": "heading_2",
         "heading_2": {
-            "rich_text": [{"text": {"content": "AI Hotspots"}}]
+            "rich_text": [{"text": {"content": "AI 热点 / AI Hotspots"}}]
         }
     })
 
     for item in ai_hotspots:
+        title_text = f"{item.get('title', item.get('title_zh', ''))}"
+        source_text = f"来源：{item['source']} / Source: {item['source']}"
+        desc_text = f"{item.get('description', '')}"
+        
+        # 构建双语显示
+        title_part = [
+            {"text": {"content": item.get('title_en', '')}, "color": "gray", "annotations": [{"color": "gray", "text": {"content": "EN"}}]},
+            {"text": {"content": " "}},
+            {"text": {"content": item.get('title_zh', ''), "annotations": [{"color": "green", "text": {"content": "中文"}}]}
+        ]
+        
         content_blocks.append({
             "object": "block",
             "type": "bulleted_list_item",
             "bulleted_list_item": {
-                "rich_text": [
-                    {"text": {"content": item['title']}},
-                    {"text": {"content": " - "}},
-                    {"text": {"content": item['source']}},
-                    {"text": {"content": ": "}},
-                    {"type": "text", "text": {"content": item['description'], "link": {"url": item['url']}}}
+                "rich_text": title_part + [
+                    {"text": {"content": "\n"}},
+                    {"text": {"content": source_text}},
+                    {"text": {"content": "\n"}},
+                    {"type": "text", "text": {"content": desc_text, "link": {"url": item['url']}}}
                 ]
             }
         })
 
-    # GitHub 热门项目部分
+    # GitHub 热门项目部分 - 双语显示
     content_blocks.append({
         "object": "block",
         "type": "heading_2",
         "heading_2": {
-            "rich_text": [{"text": {"content": "GitHub Trending"}}]
+            "rich_text": [{"text": {"content": "GitHub 热门项目 / GitHub Trending"}}]
         }
     })
 
     for project in github_projects:
+        # 构建双语显示
+        name_part = [
+            {"text": {"content": project.get('name_en', ''), "color": "gray", "annotations": [{"color": "gray", "text": {"content": "EN"}}]},
+            {"text": {"content": " "}},
+            {"text": {"content": project.get('name', ''), "annotations": [{"color": "green", "text": {"content": "中文"}}]}
+        ]
+        
+        desc_text = f"{project.get('description', '')}"
+        stars_text = f"({project.get('stars', 0)} ★)"
+        
         content_blocks.append({
             "object": "block",
             "type": "bulleted_list_item",
             "bulleted_list_item": {
-                "rich_text": [
-                    {"text": {"content": project['name']}},
-                    {"text": {"content": " ("}},
-                    {"text": {"content": str(project['stars'])}},
-                    {"text": {"content": " stars) - "}},
-                    {"text": {"content": project['language']}},
+                "rich_text": name_part + [
+                    {"text": {"content": " "}},
+                    {"text": {"content": stars_text, "color": "orange"}},
+                    {"text": {"content": " - "}},
+                    {"text": {"content": project.get('language', ''), "color": "blue"}},
                     {"text": {"content": ": "}},
-                    {"type": "text", "text": {"content": project['description'], "link": {"url": project['url']}}}
+                    {"text": {"content": desc_text, "link": {"url": project['url']}}}
                 ]
             }
         })
 
     # 创建 Notion 页面
     date_str = datetime.now(HONGKONG_TZ).strftime("%Y-%m-%d")
-    result = create_notion_page(f"AI Daily {date_str}", content_blocks)
-
-    if "id" in result:
-        print(f"Successfully created Notion page: {result['id']}")
-        print(f"View page: https://www.notion.so/{result['id'].replace('-', '')}")
-    else:
-        print(f"Failed to create page: {result}")
-
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Done!")
+    result = create_notion_page(f"AI Daily {date_str}", content_blocks, ai_hotspots, github_projects)
 
 if __name__ == "__main__":
     main()
